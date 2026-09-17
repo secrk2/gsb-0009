@@ -88,3 +88,39 @@ export function transitionWaybill(id, action, { reason, occurredAt, idempotencyK
     { 'Idempotency-Key': idempotencyKey || newIdempotencyKey() },
   );
 }
+
+// ---------- 运输排班 ----------
+
+const qs = (params) => Object.entries(params)
+  .filter(([, v]) => v !== undefined && v !== null && v !== '')
+  .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+  .join('&');
+
+export const getGantt = (params) => request(`/schedules/gantt?${qs(params)}`);
+export const getUtilization = (params) => request(`/schedules/utilization?${qs(params)}`);
+export const checkSchedule = (body) => api.post('/schedules/check', body);
+
+function scheduleWrite(path, body) {
+  return api.post(path, body, { 'Idempotency-Key': newIdempotencyKey() });
+}
+export const assignSchedule = (body) => scheduleWrite('/schedules/assign', body);
+export const rescheduleSchedule = (body) => scheduleWrite('/schedules/reschedule', body);
+export const reassignSchedule = (body) => scheduleWrite('/schedules/reassign', body);
+export const unbindSchedule = (body) => scheduleWrite('/schedules/unbind', body);
+
+/** 利用率 CSV 导出（需带 JWT，取 Blob 触发下载） */
+export async function downloadScheduleCsv(params) {
+  const res = await fetch(`/api/schedules/export.csv?${qs(params)}`, {
+    headers: store.token ? { Authorization: `Bearer ${store.token}` } : {},
+  });
+  if (!res.ok) throw new ApiError('CSV_FAILED', '导出失败，请稍后重试', res.status);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `车辆利用率_${params.from?.slice(0, 10) || ''}_${params.to?.slice(0, 10) || ''}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}

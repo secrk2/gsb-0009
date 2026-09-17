@@ -131,6 +131,39 @@ test('allowedActions：按状态与角色给出合法动作', () => {
   const completedAny = allowedActions('COMPLETED', 'REGULATOR');
   assert.deepEqual(completedAny, []);
 
+  // schedule_assign 标记 uiHidden，不进详情页按钮
+  assert.ok(!allowedActions('REGULATOR_VERIFY', 'REGULATOR').some((a) => a.action === 'schedule_assign'));
+
   // 每个状态标签都应有中文名
   for (const s of Object.keys(STATES)) assert.ok(STATES[s]);
+});
+
+test('排班解绑：已派车可退回待派池，需原因；驾驶员无权', () => {
+  const r1 = checkTransition(wb('DISPATCHED'), 'unassign', regulator, '车辆抛锚，改派备用车');
+  assert.equal(r1.ok, true);
+  assert.equal(r1.to, 'REGULATOR_VERIFY');
+
+  const r2 = checkTransition(wb('DISPATCHED'), 'unassign', regulator, '');
+  assert.equal(r2.ok, false);
+  assert.equal(r2.error.code, 'REASON_REQUIRED');
+
+  const r3 = checkTransition(wb('DISPATCHED'), 'unassign', driver, '请假');
+  assert.equal(r3.ok, false);
+  assert.equal(r3.status, 403);
+
+  // 运输中不可解绑
+  const r4 = checkTransition(wb('IN_TRANSIT'), 'unassign', regulator, '原因');
+  assert.equal(r4.ok, false);
+  assert.equal(r4.status, 409);
+});
+
+test('排班派车：监管员与企业管理员均可把待核验单派出', () => {
+  const r1 = checkTransition(wb('REGULATOR_VERIFY'), 'schedule_assign', regulator);
+  assert.equal(r1.ok, true);
+  assert.equal(r1.to, 'DISPATCHED');
+  const r2 = checkTransition(wb('REGULATOR_VERIFY'), 'schedule_assign', admin);
+  assert.equal(r2.ok, true);
+  const r3 = checkTransition(wb('REGULATOR_VERIFY'), 'schedule_assign', driver);
+  assert.equal(r3.ok, false);
+  assert.equal(r3.status, 403);
 });

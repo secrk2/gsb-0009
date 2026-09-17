@@ -74,6 +74,7 @@ watch(() => store.token, ensureEnums);
 
 const ALL_MENUS = [
   { path: '/', label: '运单作战台', icon: '📊', roles: ['REGULATOR', 'ENTERPRISE_ADMIN'], exact: true },
+  { path: '/schedules', label: '运输排班', icon: '🗓️', roles: ['REGULATOR', 'ENTERPRISE_ADMIN', 'DRIVER', 'ESCORT'] },
   { path: '/waybills', label: '电子运单', icon: '📄', roles: ['REGULATOR', 'ENTERPRISE_ADMIN', 'DRIVER', 'ESCORT'] },
 ];
 

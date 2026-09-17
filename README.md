@@ -1,6 +1,6 @@
 # 安运通 · 危货运输监管平台（骨架版）
 
-省级危险货物道路运输监管平台重建项目。当前交付系统骨架与两个核心菜单：**运单作战台**、**电子运单**（含完整状态机、企业数据隔离、离线容错）。
+省级危险货物道路运输监管平台重建项目。当前交付系统骨架与三个核心菜单：**运单作战台**、**运输排班**、**电子运单**（含完整状态机、企业数据隔离、离线容错、周/日甘特拖拽排班）。
 
 ## 一键启动
 
@@ -14,7 +14,7 @@ docker compose up -d --build
 | 后端（直连） | http://localhost:7102/api/health | 调试/健康检查用 |
 | MySQL / Redis | 容器网络内部 | 不暴露宿主机端口 |
 
-首次启动自动建表（`db/init/01_schema.sql`）并由后端注入演示数据（`SEED_DEMO=true`，仅当库为空时注入，幂等）。停止并清空数据：`docker compose down -v`。
+首次启动自动建表（`db/init/01_schema.sql` + `db/init/02_schedule.sql`）并由后端注入演示数据（`SEED_DEMO=true`，仅当库为空时注入，幂等）。**新增排班表后需重建数据卷**：`docker compose down -v && docker compose up -d --build`。
 
 ## 演示账号（密码统一 `Ayt@123456`）
 
@@ -25,7 +25,21 @@ docker compose up -d --build
 | `al_driver1` `al_driver2`（hy_/qf_ 同理） | 驾驶员 | 本人承运运单 |
 | `al_escort1` `al_escort2`（hy_/qf_ 同理） | 押运员 | 本人押运运单 |
 
-演示数据开箱即见：3 家企业、16 个账号、22 张运单覆盖**填报 / 企业自审 / 监管核验（待核验）/ 已派车 / 运输中 / 已完成 / 异常中止**全部状态，并含今日应到应离、发车超时、到达超时、今日异常中止等作战台场景（时间相对注入时刻生成，任何时候启动都有"今日"数据）。
+演示数据开箱即见：3 家企业、22 个账号（含每企业 3 名驾驶员/3 名押运员）、15 辆车、25 张运单覆盖**填报 / 企业自审 / 监管核验（待核验）/ 已派车 / 运输中 / 已完成 / 异常中止**全部状态，并含今日应到应离、发车超时、到达超时、今日异常中止等作战台场景（时间相对注入时刻生成，任何时候启动都有"今日"数据）。
+排班专用演示数据：明日「云A·D3106」上 3 张已派车单按 30 分钟周转排成链式序列（拖第一张即可看链式重排）；押运员**吴畏（al_escort2）押运证昨日到期**（今日其在途/已派单开箱即报证照过期）；D3106 明日中午有二级维护窗口、押运员**沈护（hy_escort2）明日全天事假**；多张待派（监管核验）单可从待派池拖入。
+
+## 运输排班（🗓️ `/schedules`）
+
+- **周/日甘特**：资源行可按 车辆 / 驾驶员 / 押运员 切换，任务条为运单计划区间；运输中/已完成单为🔒锚点只读，异常中止单灰显不占资源。
+- **拖拽排班**：待派池单拖入车辆行 = 派车；同车拖动 = 改期；跨车/跨人 = 改派（必填原因）。落点自动按 30 分钟（周）/15 分钟（日）吸附。
+- **冲突逐条标红可点开**：同车时段重叠、同驾驶员重叠、同押运员重叠、押运员/驾驶员证照过期、维保/请假不可用窗口、撞锁定锚点——每条给单号、资源、两个时间区间和中文原因，点「在甘特上定位」自动切维度并滚动闪烁，而非笼统报错。
+- **改派链式重排**：改派后同车后续单按 30 分钟周转只后推、保持原时长；纯函数 `reschedule.js` 内含三色 DFS 环检测安全闸；运输中/已完成锚点绝不移动，撞上即 `ANCHOR_COLLISION` 整单回滚。
+- **超时二次确认留痕**：落点使任一单（含连带顺延单）预计到达晚于原计划时，先 dry-run 再弹强制填原因（非空才能提交，≤500字），原因写入 `waybill_events.changes` 留痕，无原因服务端 `400 LATE_REASON_REQUIRED`。
+- **解绑重派**：已派车单可「解绑退回」到待派池（必填原因，状态回到监管核验，人车绑定保留为默认值）。
+- **三端布局**：≥1280 桌面甘特+右侧待派池/详情；641–1279 平板两栏；≤640 手机不拖拽、按日竖向卡片 + 派车/改期/改派/解绑按钮 + 全屏表单。
+- **三种空态文案各自独立**：加载失败（重试）／选中车辆该时段无排班（引导从待派池拖入）／窗口内排班全部异常中止（给取消单数并可跳详情）。
+- **车辆利用率（三处同口径同数据）**：统一时间口径 `已排班占用时长 ÷ 可用时长`，分子按窗口求交并分钟合并去重（同车重叠不双算），分母按每周可用时段裁剪再扣维保/请假。作战台「车辆利用率（本周）」卡、排班详情侧栏、`GET /api/schedules/export.csv` 三处均由后端 `utilization.js` 同一函数产出，界面均标注口径与"临时改派多的月份可能与单数口径相反"的注脚。
+- 排班写操作沿用 `Idempotency-Key` + 事务（车辆/人员/运单按 id 排序加 `FOR UPDATE`，锁内当前读复验）防并发双派；写后失效作战台缓存。司乘角色只读。
 
 ## 电子运单状态机
 
@@ -64,12 +78,17 @@ docker compose up -d --build
 ```
 ├── docker-compose.yml        # mysql / redis / backend:7102 / frontend(nginx):8102
 ├── db/init/01_schema.sql     # 建表（企业、账号、运单、事件留痕、单号计数器、幂等键）
+├── db/init/02_schedule.sql   # 排班域（车辆、人员证照、可用时段、不可用窗口、waybills.vehicle_id、events.changes）
 ├── backend/                  # Express + MySQL + Redis（端口 7102）
-│   ├── src/stateMachine.js   # 状态机（纯函数，含中文拦截原因）
+│   ├── src/stateMachine.js   # 状态机（纯函数，含中文拦截原因，含 schedule_assign/unassign）
+│   ├── src/conflicts.js      # 排班冲突检测（纯函数：重叠/证照/不可用/锚点）
+│   ├── src/reschedule.js     # 链式重排 + 三色 DFS 环检测（纯函数）
+│   ├── src/utilization.js    # 车辆利用率时间口径（纯函数，作战台/详情/CSV 共用）
+│   ├── src/routes/schedule.routes.js # 排班 API（事务、行锁、当前读复验、CSV）
 │   ├── src/waybillNo.js      # 单号分配（行锁、作废不复用）
 │   ├── src/idempotency.js    # 幂等键存取与回放
-│   ├── src/seed.js           # 演示数据（幂等注入）
-│   └── test/                 # node --test 单元测试（22 例）
+│   ├── src/seed.js           # 演示数据（幂等注入，含车辆/证照/维保/请假与链式排班）
+│   └── test/                 # node --test 单元测试（59 例：状态机/校验/冲突/重排/利用率/排班编排）
 └── frontend/                 # Vue3 + Vite，Nginx 托管（端口 8102）
     └── src/offline.js        # 离线队列与自动同步
 ```
@@ -84,13 +103,18 @@ docker compose up -d --build
 | GET | `/api/waybills/:id` | 详情 + 留痕 + 当前可执行动作 |
 | POST | `/api/waybills/:id/transition` | 状态流转（需幂等键，状态机拦截非法流转） |
 | GET | `/api/meta/enums` `/api/meta/crew` `/api/meta/enterprises` | 枚举 / 企业人员 / 企业列表 |
+| GET | `/api/schedules/gantt` | 排班甘特数据（窗口 + 维度，含任务/待派池/资源/证照/不可用/冲突地图/利用率） |
+| POST | `/api/schedules/check` | 排班 dry-run：返回冲突、晚点单、级联预览（不落库） |
+| POST | `/api/schedules/assign` `/reschedule` `/reassign` | 派车 / 改期 / 改派（幂等键；改派必填原因；晚点必填 late_reason） |
+| POST | `/api/schedules/unbind` | 解绑退回待派池（幂等键，必填原因） |
+| GET | `/api/schedules/utilization` `/api/schedules/export.csv` | 车辆利用率（时间口径，三处同源）/ UTF-8 BOM CSV 导出 |
 
 写操作必须携带 `Idempotency-Key` 请求头（前端自动生成，离线队列重放时沿用）。
 
 ## 本地开发（不用 Docker）
 
 ```bash
-# 依赖：本机 MySQL 8（建库 anyuntong，导入 db/init/01_schema.sql）与 Redis
+# 依赖：本机 MySQL 8（建库 anyuntong，依次导入 db/init/01_schema.sql、db/init/02_schedule.sql）与 Redis
 cd backend && npm install && npm run dev        # 后端 :7102，首启自动注入演示数据
 cd frontend && npm install && npm run dev       # 前端 :5173，/api 代理到 7102
 cd backend && npm test                          # 状态机/校验器单元测试

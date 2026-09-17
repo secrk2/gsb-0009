@@ -64,6 +64,22 @@ export const TRANSITIONS = {
     to: 'DISPATCHED',
     roles: ['REGULATOR'],
   },
+  // 排班域动作：监管员与企业管理员都可在排班甘特上把待派单派到车（不进详情页按钮）
+  schedule_assign: {
+    label: '排班派车',
+    from: ['REGULATOR_VERIFY'],
+    to: 'DISPATCHED',
+    roles: ['REGULATOR', 'ENTERPRISE_ADMIN'],
+    uiHidden: true,
+  },
+  // 解绑：车抛锚/人请假时把已派车单退回待派池，必须填原因
+  unassign: {
+    label: '解绑退回',
+    from: ['DISPATCHED'],
+    to: 'REGULATOR_VERIFY',
+    roles: ['REGULATOR', 'ENTERPRISE_ADMIN'],
+    needReason: true,
+  },
   depart: {
     label: '启运',
     from: ['DISPATCHED'],
@@ -96,7 +112,7 @@ const fail = (status, code, message, extra = {}) => ({
 /** 当前状态下可执行的合法动作（用于错误提示与前端按钮渲染） */
 export function allowedActions(status, role) {
   return Object.entries(TRANSITIONS)
-    .filter(([, t]) => t.from.includes(status) && (!role || t.roles.includes(role)))
+    .filter(([, t]) => t.from.includes(status) && (!role || t.roles.includes(role)) && !t.uiHidden)
     .map(([action, t]) => ({ action, label: t.label, to: t.to, needReason: !!t.needReason }));
 }
 

@@ -64,6 +64,41 @@
         </div>
       </section>
 
+      <!-- 车辆利用率（与排班详情、CSV 导出同口径同数据） -->
+      <section class="card util-card">
+        <div class="card-head">
+          <h2>车辆利用率（本周）</h2>
+          <div class="util-head-tools">
+            <span class="card-note">{{ utilCaliber }}</span>
+            <RouterLink class="btn btn-ghost btn-sm" to="/schedules">去排班调整</RouterLink>
+          </div>
+        </div>
+        <div v-if="utilLoading" class="loading">利用率加载中…</div>
+        <table v-else-if="utilItems.length" class="data-table util-table">
+          <thead>
+            <tr><th>车牌</th><th>企业</th><th>可用时长</th><th>已排班时长</th><th style="width:200px">利用率</th><th>单数</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="u in utilItems" :key="u.resource_id" @click="goSchedule">
+              <td class="mono">{{ u.plate }}</td>
+              <td class="cell-sub">{{ u.enterprise_name }}</td>
+              <td>{{ fmtMinutes(u.available_min) }}</td>
+              <td>{{ fmtMinutes(u.occupied_min) }}</td>
+              <td>
+                <div class="util-bar-cell">
+                  <div class="util-bar"><div class="util-bar-in" :class="{ over: u.rate > 1 }"
+                    :style="{ width: barW(u.rate) }"></div></div>
+                  <span class="util-rate" :class="{ over: u.rate > 1 }">{{ fmtRate(u.rate) }}</span>
+                </div>
+              </td>
+              <td>{{ u.waybill_count }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="empty">本周暂无已建档车辆的排班数据</div>
+        <div class="util-footnote">{{ utilFootnote }}</div>
+      </section>
+
       <!-- 今日应到应离 -->
       <section class="today-grid">
         <div class="card">
@@ -99,8 +134,7 @@
       </section>
 
       <!-- 异常与超时红点 -->
-      <section class="alert-grid">
-        <div class="card alert-card" :class="{ armed: summary.alerts.aborted_today.length }">
+      <section class="alert-grid">        <div class="card alert-card" :class="{ armed: summary.alerts.aborted_today.length }">
           <div class="card-head">
             <h2><span v-if="summary.alerts.aborted_today.length" class="dot"></span>今日异常中止</h2>
             <span class="badge-count">{{ summary.alerts.aborted_today.length }}</span>
@@ -152,9 +186,10 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { getCached } from '../api.js';
+import { getCached, api } from '../api.js';
 import { store } from '../store.js';
 import { fmtTime, fmtDT, fmtClock } from '../utils.js';
+import { startOfWeekBeijing, addDays, toLocalInput, fmtRate, fmtMinutes } from '../utils/gantt.js';
 import StateBadge from '../components/StateBadge.vue';
 import ErrorState from '../components/ErrorState.vue';
 
@@ -165,6 +200,32 @@ const cachedAt = ref(null);
 const error = ref(null);
 const errorType = ref('error');
 let timer = null;
+
+// 车辆利用率（本周窗口）：与排班甘特、CSV 导出共用 /schedules/utilization 同一算法
+const utilItems = ref([]);
+const utilLoading = ref(false);
+const utilCaliber = '时间口径：利用率 = 已排班占用时长 ÷ 可用时长（区间合并去重，扣除维保/请假）';
+const utilFootnote = '注：临时改派频繁的月份，本口径可能与「已执行单数÷派单数」方向相反，作战台、排班详情与导出统一采用此时间口径。';
+const barW = (rate) => `${Math.min(100, (rate || 0) * 100).toFixed(1)}%`;
+const goSchedule = () => router.push('/schedules');
+
+async function loadUtilization() {
+  if (!['REGULATOR', 'ENTERPRISE_ADMIN'].includes(store.user?.role)) return;
+  utilLoading.value = true;
+  try {
+    const start = startOfWeekBeijing(Date.now());
+    const q = new URLSearchParams({
+      from: toLocalInput(start),
+      to: toLocalInput(addDays(start, 7)),
+    });
+    const r = await api.get(`/schedules/utilization?${q.toString()}`);
+    utilItems.value = r.items.filter((u) => u.available_min > 0 || u.occupied_min > 0);
+  } catch {
+    utilItems.value = []; // 利用率加载失败不拖垮作战台主数据
+  } finally {
+    utilLoading.value = false;
+  }
+}
 
 const pendingTotal = computed(() => (summary.value?.funnel || []).reduce((s, f) => s + Number(f.pending_dispatch), 0));
 const alertTotal = computed(() => {
@@ -201,6 +262,7 @@ function goDetail(id) {
 
 onMounted(() => {
   load();
+  loadUtilization();
   timer = setInterval(() => {
     if (store.online && !document.hidden) load();
   }, 30000);

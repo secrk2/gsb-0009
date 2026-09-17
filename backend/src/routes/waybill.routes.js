@@ -130,17 +130,24 @@ router.post('/', requireRole('ENTERPRISE_ADMIN'), requireIdempotencyKey, async (
 
     const created = await withTransaction(async (conn) => {
       const { waybillNo } = await allocateWaybillNo(conn, enterprise);
+      // 按车牌解析车辆实体（排班甘特按 vehicle_id 归行；外牌/未建档车回落 NULL）
+      const plateNorm = String(body.vehicle_plate).trim().toUpperCase();
+      const [vehRows] = await conn.query(
+        'SELECT id FROM vehicles WHERE plate = ? AND enterprise_id = ? AND active = 1 LIMIT 1',
+        [plateNorm, enterprise.id],
+      );
+      const vehicleId = vehRows[0]?.id || null;
       const [result] = await conn.query(
         `INSERT INTO waybills
           (waybill_no, enterprise_id, status, cargo_name, cargo_class, quantity, unit,
-           origin, destination, vehicle_plate, driver_id, escort_id,
+           origin, destination, vehicle_plate, vehicle_id, driver_id, escort_id,
            planned_departure, planned_arrival, remark, idempotency_key, created_by)
-         VALUES (?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           waybillNo, enterprise.id,
           String(body.cargo_name).trim(), body.cargo_class, Number(body.quantity),
           String(body.unit || '吨').trim(), String(body.origin).trim(), String(body.destination).trim(),
-          String(body.vehicle_plate).trim().toUpperCase(), driverId, escortId,
+          plateNorm, vehicleId, driverId, escortId,
           parseLocalDateTime(body.planned_departure), parseLocalDateTime(body.planned_arrival),
           body.remark ? String(body.remark).trim() : null, req.idempotencyKey, req.user.id,
         ],
