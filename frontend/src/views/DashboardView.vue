@@ -31,7 +31,29 @@
         </div>
       </section>
 
-      <!-- 各企业待派车漏斗 -->
+      <!-- 车辆利用率（时间口径，与排班详情/CSV 导出共用后端口径与数值） -->
+      <section v-if="summary.utilization" class="card util-dash-card" @click="goScheduling">
+        <div class="util-dash-main">
+          <div class="util-dash-num" :class="{ warn: summary.utilization.fleet.ratio > 1 }">
+            {{ summary.utilization.fleet.ratio_text }}
+          </div>
+          <div>
+            <div class="util-dash-name">
+              {{ summary.utilization.metric.name }} · {{ summary.utilization.view_label }}
+              <span class="util-dash-jump">去排班 ›</span>
+            </div>
+            <div class="util-dash-formula" :title="summary.utilization.metric.detail">
+              口径：{{ summary.utilization.fleet.scheduled_hours }}h 已排班 ÷
+              {{ summary.utilization.fleet.available_hours }}h 可用
+              ＝ {{ summary.utilization.fleet.ratio_text }}
+            </div>
+            <div class="util-dash-detail">{{ summary.utilization.metric.formula }}</div>
+          </div>
+        </div>
+        <div v-if="summary.utilization.overbooked_vehicles" class="util-dash-alert">
+          ⚠ {{ summary.utilization.overbooked_vehicles }} 辆车疑似超排（占用时长超可用时长），请到排班甘特处理冲突
+        </div>
+      </section>
       <section class="card">
         <div class="card-head">
           <h2>待派车漏斗</h2>
@@ -197,6 +219,9 @@ async function load() {
 
 function goDetail(id) {
   router.push(`/waybills/${id}`);
+}
+function goScheduling() {
+  router.push('/scheduling');
 }
 
 onMounted(() => {

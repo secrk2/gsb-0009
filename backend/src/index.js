@@ -8,6 +8,7 @@ import authRoutes from './routes/auth.routes.js';
 import metaRoutes from './routes/meta.routes.js';
 import waybillRoutes from './routes/waybill.routes.js';
 import dashboardRoutes from './routes/dashboard.routes.js';
+import schedulingRoutes from './routes/scheduling.routes.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -27,6 +28,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/meta', metaRoutes);
 app.use('/api/waybills', waybillRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/scheduling', schedulingRoutes);
 
 app.use('/api', (req, res) => {
   res.status(404).json({ error: { code: 'NOT_FOUND', message: '接口不存在' } });

@@ -128,19 +128,27 @@ router.post('/', requireRole('ENTERPRISE_ADMIN'), requireIdempotencyKey, async (
       return res.status(400).json({ error: { code: 'NO_ENTERPRISE', message: '当前账号未关联企业' } });
     }
 
+    // 车辆台账解析：号牌命中本企业车辆则挂 vehicle_id（甘特车辆泳道依赖）；未命中不阻断填报
+    const plateNorm = String(body.vehicle_plate).trim().toUpperCase();
+    const [[vehRow]] = await pool.query(
+      'SELECT id FROM vehicles WHERE enterprise_id = ? AND plate = ? AND active = 1 LIMIT 1',
+      [enterprise.id, plateNorm],
+    );
+    const vehicleId = vehRow?.id || null;
+
     const created = await withTransaction(async (conn) => {
       const { waybillNo } = await allocateWaybillNo(conn, enterprise);
       const [result] = await conn.query(
         `INSERT INTO waybills
           (waybill_no, enterprise_id, status, cargo_name, cargo_class, quantity, unit,
-           origin, destination, vehicle_plate, driver_id, escort_id,
+           origin, destination, vehicle_plate, vehicle_id, driver_id, escort_id,
            planned_departure, planned_arrival, remark, idempotency_key, created_by)
          VALUES (?, ?, 'DRAFT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           waybillNo, enterprise.id,
           String(body.cargo_name).trim(), body.cargo_class, Number(body.quantity),
           String(body.unit || '吨').trim(), String(body.origin).trim(), String(body.destination).trim(),
-          String(body.vehicle_plate).trim().toUpperCase(), driverId, escortId,
+          plateNorm, vehicleId, driverId, escortId,
           parseLocalDateTime(body.planned_departure), parseLocalDateTime(body.planned_arrival),
           body.remark ? String(body.remark).trim() : null, req.idempotencyKey, req.user.id,
         ],
@@ -185,7 +193,14 @@ router.get('/:id', async (req, res, next) => {
        FROM waybill_events WHERE waybill_id = ? ORDER BY seq`,
       [id],
     );
-    res.json({ waybill, events, allowed_actions: computeAllowedActions(waybill, req.user) });
+    const [adjustments] = await pool.query(
+      `SELECT id, batch_id, kind, old_planned_departure, new_planned_departure,
+              old_planned_arrival, new_planned_arrival, late_arrival_confirmed,
+              reason, actor_name, created_at
+       FROM schedule_adjustments WHERE waybill_id = ? ORDER BY created_at, id`,
+      [id],
+    );
+    res.json({ waybill, events, schedule_adjustments: adjustments, allowed_actions: computeAllowedActions(waybill, req.user) });
   } catch (err) {
     next(err);
   }
@@ -251,6 +266,17 @@ router.post('/:id/transition', requireIdempotencyKey, async (req, res, next) => 
       }
       params.push(id);
       await conn.query(`UPDATE waybills SET ${sets.join(', ')} WHERE id = ?`, params);
+
+      // 派车时兜底挂车辆台账（老数据/手填号牌在甘特里也能进车辆泳道）
+      if (action === 'regulator_approve') {
+        await conn.query(
+          `UPDATE waybills w
+             LEFT JOIN vehicles v ON v.enterprise_id = w.enterprise_id AND v.plate = w.vehicle_plate AND v.active = 1
+             SET w.vehicle_id = v.id
+           WHERE w.id = ? AND w.vehicle_id IS NULL`,
+          [id],
+        );
+      }
 
       const [[{ nextSeq }]] = await conn.query(
         'SELECT COALESCE(MAX(seq), 0) + 1 AS nextSeq FROM waybill_events WHERE waybill_id = ?',

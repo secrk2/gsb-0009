@@ -16,6 +16,12 @@
             <div class="cell-sub">{{ w.enterprise_name }} · 创建于 {{ fmtDT(w.created_at) }}</div>
           </div>
           <div class="action-bar">
+            <RouterLink
+              v-if="canSchedule"
+              class="btn"
+              :class="w.status === 'DISPATCHED' ? 'btn-primary' : 'btn-ghost'"
+              :to="schedulingLink"
+            >{{ w.status === 'DISPATCHED' ? '运输排班·改派' : '查看运输排班' }}</RouterLink>
             <button
               v-for="a in detail.allowed_actions"
               :key="a.action"
@@ -25,7 +31,7 @@
               :title="isQueued(a.action) ? '已离线暂存，恢复网络后自动同步' : (!store.online && !isQueueable(a.action) ? '当前离线，该操作需要网络' : '')"
               @click="onAction(a)"
             >{{ isQueued(a.action) ? `${a.label}（已暂存待同步）` : a.label }}</button>
-            <span v-if="!detail.allowed_actions.length" class="cell-sub">当前状态无可执行操作</span>
+            <span v-if="!detail.allowed_actions.length && !canSchedule" class="cell-sub">当前状态无可执行操作</span>
           </div>
         </div>
 
@@ -82,6 +88,29 @@
         <div class="card-head"><h2>流转留痕</h2><span class="card-note">含离线补录记录，全程可追溯</span></div>
         <WaybillTimeline :events="detail.events" />
       </div>
+
+      <div v-if="detail.schedule_adjustments && detail.schedule_adjustments.length" class="card">
+        <div class="card-head">
+          <h2>排班改派留痕</h2>
+          <span class="card-note">含链式顺延逐单记录与超时到达确认</span>
+        </div>
+        <ul class="timeline">
+          <li v-for="a in detail.schedule_adjustments" :key="a.id" class="timeline-item">
+            <span class="timeline-dot" :class="a.kind === 'CHAIN_SHIFT' ? 'dot-chain' : 'dot-reassign'"></span>
+            <div class="timeline-body">
+              <div class="timeline-head">
+                <span class="timeline-action">{{ adjustmentKind(a.kind) }}</span>
+                <span v-if="a.late_arrival_confirmed" class="tag tag-late">已确认超时到达</span>
+              </div>
+              <div class="timeline-meta">
+                {{ a.actor_name }} · {{ fmtDT(a.created_at) }}
+                · 计划发车 {{ fmtDT(a.old_planned_departure) }} → {{ fmtDT(a.new_planned_departure) }}
+              </div>
+              <div class="timeline-reason">{{ a.reason }}</div>
+            </div>
+          </li>
+        </ul>
+      </div>
     </template>
 
     <div v-else class="loading">加载中…</div>
@@ -112,6 +141,29 @@ const reason = ref('');
 
 const w = computed(() => detail.value?.waybill || {});
 const actingLabel = computed(() => detail.value?.allowed_actions.find((a) => a.action === acting.value)?.label || '');
+
+// 企业管理员/监管员可进入排班；仅已派车单支持直接改派
+const canSchedule = computed(() =>
+  ['REGULATOR', 'ENTERPRISE_ADMIN'].includes(store.user?.role)
+  && ['DISPATCHED', 'IN_TRANSIT', 'COMPLETED'].includes(w.value.status));
+
+// 监管员需带企业上下文才能打开排班；已派车单直达改派弹窗
+const schedulingLink = computed(() => {
+  const q = new URLSearchParams();
+  if (store.user?.role === 'REGULATOR' && w.value.enterprise_id) q.set('enterprise_id', w.value.enterprise_id);
+  if (w.value.status === 'DISPATCHED') q.set('reassign', w.value.id);
+  const qs = q.toString();
+  return `/scheduling${qs ? `?${qs}` : ''}`;
+});
+
+const ADJUSTMENT_KIND = {
+  RESCHEDULE: '调整计划时间',
+  REASSIGN_VEHICLE: '改派车辆',
+  REASSIGN_DRIVER: '改派驾驶员',
+  REASSIGN_ESCORT: '改派押运员',
+  CHAIN_SHIFT: '链式顺延',
+};
+const adjustmentKind = (k) => ADJUSTMENT_KIND[k] || k;
 
 // 离线时仅启运/到达可暂存本地
 const isQueueable = (action) => action === 'depart' || action === 'arrive';

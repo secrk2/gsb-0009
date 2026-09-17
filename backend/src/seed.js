@@ -78,6 +78,55 @@ export async function seedIfEmpty(pool) {
       for (const [u, n] of plan.escorts) await addUser(u, n, 'ESCORT', entKey, `1390000${phoneSeq++}`);
     }
 
+    // ---- 车辆台账 ----
+    const vehiclePlan = {
+      AL: ['云A·D3101','云A·D3102','云A·D3103','云A·D3105','云A·D3106','云A·D3107','云A·D3108',
+           '云A·D3109','云A·D3110','云A·D3111','云A·D3112','云A·D3120','云A·D3121','云A·D3122'],
+      HY: ['云B·H2201','云B·H2202','云B·H2203','云B·H2205','云B·H2206','云B·H2207','云B·H2208','云B·H2209'],
+      QF: ['云C·Q3301','云C·Q3302','云C·Q3303','云C·Q3305','云C·Q3306','云C·Q3308'],
+    };
+    const vehicles = {}; // plate -> {id, enterprise_id}
+    let loadSeq = 30;
+    for (const [entKey, plates] of Object.entries(vehiclePlan)) {
+      for (const plate of plates) {
+        const [r] = await conn.query(
+          `INSERT INTO vehicles (enterprise_id, plate, load_tons, cargo_scope, transport_license_no, transport_license_until, status)
+           VALUES (?, ?, ?, '危险货物运输（罐式）', ?, '2027-12-31', 'AVAILABLE')`,
+          [enterprises[entKey].id, plate, (loadSeq % 13) + 20, `云交运管${entKey}${String(loadSeq).padStart(6, '0')}`],
+        );
+        vehicles[plate] = { id: r.insertId, enterprise_id: enterprises[entKey].id };
+        loadSeq += 1;
+      }
+    }
+
+    // ---- 证照：每个驾驶员两证（驾驶证+危货从业资格证），每个押运员一证（押运从业资格）----
+    // 演示点：al_escort2 吴畏 的押运从业资格证已于昨日过期 → 排班冲突红点
+    const farFuture = '2027-12-31';
+    const yesterday = dateStr(dayShift(-1, 0));
+    for (const plan of Object.values(staffPlan)) {
+      for (const [u] of plan.drivers) {
+        await addQual(conn, users[u].id, 'DRIVING_LICENSE', farFuture);
+        await addQual(conn, users[u].id, 'QUALIFICATION_CARD', farFuture);
+      }
+      for (const [u] of plan.escorts) {
+        await addQual(conn, users[u].id, 'QUALIFICATION_CARD', u === 'al_escort2' ? yesterday : farFuture);
+      }
+    }
+
+    // ---- 车辆不可用：云A·D3107 今日凌晨抛锚抢修（与其已派车超时单重叠，改派入口场景）----
+    await conn.query(
+      `INSERT INTO vehicle_unavailability (vehicle_id, start_at, end_at, reason, created_by)
+       VALUES (?, DATE_SUB(NOW(), INTERVAL 6 HOUR), DATE_ADD(NOW(), INTERVAL 6 HOUR), '发动机故障拖回修理厂抢修', ?)`,
+      [vehicles['云A·D3107'].id, users.al_admin.id],
+    );
+
+    // ---- 人员请假：al_driver1 张远航 明日全天事假（与明日排单形成请假冲突）----
+    await conn.query(
+      `INSERT INTO crew_leave (user_id, start_at, end_at, reason, created_by)
+       VALUES (?, DATE_ADD(CURDATE(), INTERVAL 1 DAY), DATE_ADD(CURDATE(), INTERVAL 2 DAY), '家中急事请事假一天', ?)`,
+      [users.al_driver1.id, users.al_admin.id],
+    );
+
     // ---- 运单 ----
     // walkTo: ABORTED 在中止前走到的阶段；actualDeparture/actualArrival 仅运输阶段需要
     const W = [
@@ -117,6 +166,36 @@ export async function seedIfEmpty(pool) {
         planned: [earlierToday(9), laterToday(3)], actualDeparture: earlierToday(8.5),
         abort: { at: earlierToday(2), by: 'regulator', reason: '山区路段塌方交通管制，车辆安全停靠待命，本次运输异常中止，已启动应急预案' },
         createdAt: dayShift(-2, 15) },
+
+      // ---- 今日排班冲突簇（甘特打开即见红，逐条可点开看原因）----
+      // 云A·D3121 同车两单（W冲突1/2 重叠）；W冲突2 押运员 al_escort2 证照昨日已过期
+      { ent: 'AL', admin: 'al_admin', driver: 'al_driver1', escort: 'al_escort1', status: 'DISPATCHED',
+        cargo: ['汽油', '第3类 易燃液体', 29], route: ['云州市经开区油库', '临江市中心油站'], plate: '云A·D3121',
+        planned: [earlierToday(1), laterToday(3)], createdAt: dayShift(-1, 11) },
+      { ent: 'AL', admin: 'al_admin', driver: 'al_driver2', escort: 'al_escort2', status: 'DISPATCHED',
+        cargo: ['柴油', '第3类 易燃液体', 30], route: ['云州市经开区油库', '北川县物资储备库'], plate: '云A·D3121',
+        planned: [at(0), laterToday(2)], createdAt: dayShift(-1, 11, 30) },
+      // 云A·D3122：与 W冲突1 同一驾驶员 al_driver1、同一押运员 al_escort1，时段重叠 → 人同落两单
+      { ent: 'AL', admin: 'al_admin', driver: 'al_driver1', escort: 'al_escort1', status: 'DISPATCHED',
+        cargo: ['甲醇', '第3类 易燃液体', 24], route: ['云州市化工园区', '望海市精细化工厂'], plate: '云A·D3122',
+        planned: [laterToday(1), laterToday(4)], createdAt: dayShift(-1, 12) },
+      // 云A·D3107 今日抛锚抢修窗口内有一单 → "车辆不可用时段被排班"，改派入口场景
+      { ent: 'AL', admin: 'al_admin', driver: 'al_driver2', escort: 'al_escort1', status: 'DISPATCHED',
+        cargo: ['煤油', '第3类 易燃液体', 27], route: ['云州市经开区油库', '望海市机场油库'], plate: '云A·D3107',
+        planned: [at(1), at(5)], createdAt: dayShift(-1, 16) },
+
+      // ---- 明日同车链队列（D3120 明早抛锚：改派首单到 D3122，D3122 后单链式顺延）----
+      // al_driver1 明日全天请假 → 首单同时带"请假时段被排班"红点，是"人请假改派"入口
+      { ent: 'AL', admin: 'al_admin', driver: 'al_driver1', escort: 'al_escort1', status: 'DISPATCHED',
+        cargo: ['汽油', '第3类 易燃液体', 28], route: ['云州市经开区油库', '临江市物流园'], plate: '云A·D3120',
+        planned: [dayShift(1, 8), dayShift(1, 12)], createdAt: dayShift(-1, 14) },
+      { ent: 'AL', admin: 'al_admin', driver: 'al_driver2', escort: 'al_escort2', status: 'DISPATCHED',
+        cargo: ['柴油', '第3类 易燃液体', 30], route: ['云州市经开区油库', '北川县矿区'], plate: '云A·D3120',
+        planned: [dayShift(1, 12, 30), dayShift(1, 17)], createdAt: dayShift(-1, 14, 30) },
+      // 备车 D3122 明日 09-13 已有一单：首单改派落点 08:00 到此车后，该单需链式顺延到 12:30
+      { ent: 'AL', admin: 'al_admin', driver: 'al_driver2', escort: 'al_escort1', status: 'DISPATCHED',
+        cargo: ['乙醇', '第3类 易燃液体', 26], route: ['云州市化工园区', '望海市制药厂'], plate: '云A·D3122',
+        planned: [dayShift(1, 9), dayShift(1, 13)], createdAt: dayShift(-1, 15) },
 
       // ===== HY 宏远危化 =====
       { ent: 'HY', admin: 'hy_admin', driver: 'hy_driver1', escort: 'hy_escort1', status: 'DRAFT',
@@ -159,7 +238,7 @@ export async function seedIfEmpty(pool) {
     ];
 
     for (const spec of W) {
-      await insertSeedWaybill(conn, { ...spec, users, enterprises });
+      await insertSeedWaybill(conn, { ...spec, users, enterprises, vehicles });
     }
 
     await conn.commit();
@@ -175,6 +254,19 @@ export async function seedIfEmpty(pool) {
 
 const RANK = { DRAFT: 0, ENTERPRISE_REVIEW: 1, REGULATOR_VERIFY: 2, DISPATCHED: 3, IN_TRANSIT: 4, COMPLETED: 5 };
 
+function dateStr(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+async function addQual(conn, userId, certType, validUntil, certNo) {
+  await conn.query(
+    'INSERT INTO crew_qualifications (user_id, cert_type, cert_no, valid_from, valid_until) VALUES (?, ?, ?, DATE_SUB(?, INTERVAL 5 YEAR), ?)',
+    [userId, certType, certNo || `ZG${certType.slice(0, 2)}${userId}${validUntil.replace(/-/g, '')}`, validUntil, validUntil],
+  );
+}
+
+
 async function insertSeedWaybill(conn, spec) {
   const ent = spec.enterprises[spec.ent];
   const admin = spec.users[spec.admin];
@@ -185,16 +277,17 @@ async function insertSeedWaybill(conn, spec) {
   const { waybillNo } = await allocateWaybillNo(conn, ent);
   const [cargoName, cargoClass, qty] = spec.cargo;
   const [plannedDep, plannedArr] = spec.planned;
+  const vehicle = spec.vehicles[spec.plate];
 
   const [r] = await conn.query(
     `INSERT INTO waybills
       (waybill_no, enterprise_id, status, cargo_name, cargo_class, quantity, unit,
-       origin, destination, vehicle_plate, driver_id, escort_id,
+       origin, destination, vehicle_plate, vehicle_id, driver_id, escort_id,
        planned_departure, planned_arrival, actual_departure, actual_arrival, abort_reason, created_by, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, '吨', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, '吨', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       waybillNo, ent.id, spec.status, cargoName, cargoClass, qty,
-      spec.route[0], spec.route[1], spec.plate, driver.id, escort.id,
+      spec.route[0], spec.route[1], spec.plate, vehicle ? vehicle.id : null, driver.id, escort.id,
       plannedDep, plannedArr, spec.actualDeparture || null, spec.actualArrival || null,
       spec.abort ? spec.abort.reason : null, admin.id, spec.createdAt,
     ],

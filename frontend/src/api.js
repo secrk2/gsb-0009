@@ -76,6 +76,37 @@ export const api = {
   post: (path, body, headers = {}) => request(path, { method: 'POST', body, headers }),
 };
 
+/** 带鉴权头的文件下载（CSV 导出）；失败时回退为 JSON 错误抛出 */
+export async function download(path) {
+  let res;
+  try {
+    res = await fetch(`/api${path}`, {
+      headers: store.token ? { Authorization: `Bearer ${store.token}` } : {},
+    });
+  } catch {
+    store.online = false;
+    throw new ApiError('OFFLINE', '网络连接失败，当前处于离线状态', 0);
+  }
+  if (!store.online) store.online = true;
+  if (!res.ok) {
+    let data = null;
+    try { data = await res.json(); } catch { /* ignore */ }
+    throw new ApiError(data?.error?.code || 'ERROR', data?.error?.message || `导出失败（${res.status}）`, res.status);
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const m = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+  const filename = m ? decodeURIComponent(m[1]) : 'export.csv';
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
 export function newIdempotencyKey() {
   return crypto.randomUUID ? crypto.randomUUID() : `k-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }

@@ -5,6 +5,7 @@ import DashboardView from './views/DashboardView.vue';
 import WaybillListView from './views/WaybillListView.vue';
 import WaybillDetailView from './views/WaybillDetailView.vue';
 import WaybillCreateView from './views/WaybillCreateView.vue';
+import SchedulingView from './views/SchedulingView.vue';
 import ErrorView from './views/ErrorView.vue';
 
 export const router = createRouter({
@@ -23,6 +24,12 @@ export const router = createRouter({
       name: 'waybill-new',
       component: WaybillCreateView,
       meta: { title: '填报运单', roles: ['ENTERPRISE_ADMIN'] },
+    },
+    {
+      path: '/scheduling',
+      name: 'scheduling',
+      component: SchedulingView,
+      meta: { title: '运输排班', roles: ['REGULATOR', 'ENTERPRISE_ADMIN'] },
     },
     { path: '/waybills/:id(\\d+)', name: 'waybill-detail', component: WaybillDetailView, meta: { title: '运单详情' } },
     { path: '/403', name: 'forbidden', component: ErrorView, meta: { title: '无权访问' } },

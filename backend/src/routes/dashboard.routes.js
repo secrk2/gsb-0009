@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { pool } from '../db.js';
 import { authRequired, requireRole } from '../auth.js';
 import { cacheGet, cacheSet } from '../redis.js';
+import { loadUtilization } from '../schedulingService.js';
 
 const router = Router();
 router.use(authRequired, requireRole('REGULATOR', 'ENTERPRISE_ADMIN'));
@@ -91,9 +92,13 @@ router.get('/summary', async (req, res, next) => {
       p,
     );
 
+    // 车辆利用率（时间口径）——与排班看板/导出共用同一计算与文案
+    const utilization = await loadUtilization(pool, scopeEnt);
+
     const payload = {
       generated_at: new Date().toISOString(),
       scope: req.user.role === 'REGULATOR' ? '全省' : '本企业',
+      utilization,
       funnel: funnel.map((f) => ({
         ...f,
         pending_dispatch: Number(f.draft) + Number(f.enterprise_review) + Number(f.regulator_verify),
